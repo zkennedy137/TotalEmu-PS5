@@ -1,0 +1,110 @@
+PS Launcher - third-party components
+====================================
+
+PS Launcher is free software under the GNU General Public License v3.0 or
+later (see LICENSE). It is a separate program from the emulators it starts;
+it contains no emulator code.
+
+Built from or linked into eboot.bin:
+
+- ps5-native-app-boilerplate build tooling, runtime shim and VideoOut
+  presenter (tools/, tooling/, runtime/, src/platform/ps5_video.c),
+  by BlackBearReloaded, as vendored in SwanStationPS5 (darkxex).
+  GPL-3.0-or-later.
+  https://github.com/darkxex/SwanStationPS5
+
+- Stand-ins in src/platform/ps5_shims.cpp follow SwanStationPS5's
+  src/platform/ps5_shims.c. GPL-3.0-or-later.
+
+- PS5 Payload SDK by John Tornblom (ps5-payload-dev), including LLVM libc++
+  (Apache-2.0 WITH LLVM-exception).
+  https://github.com/ps5-payload-dev/sdk
+
+- SDL2, PacBrew PS5 port. zlib license.
+  https://www.libsdl.org/
+
+- GNU libiconv, linked by PacBrew's SDL2. LGPL-2.1-or-later.
+  https://www.gnu.org/software/libiconv/
+
+- libsamplerate, linked by PacBrew's SDL2. BSD-2-Clause.
+  https://github.com/libsndfile/libsamplerate
+
+- mbedTLS 3.6.7 (src/tls/mbedtls/), the TLS library of the HTTPS fallback in src/tls/tls_client.cpp.
+  Apache-2.0. Its LICENSE is in src/tls/mbedtls/LICENSE.
+  https://github.com/Mbed-TLS/mbedtls
+
+- The HTTPS fallback in src/tls/tls_client.cpp and its mbedTLS configuration (src/tls/mbedtls/include/mbedtls/mbedtls_config_fe.h),
+  from PSSwanStation (Press5elect). GPL-3.0-or-later.
+
+- src/json.h, a small JSON reader from PSSwanStation (Press5elect). GPL-3.0-or-later.
+
+- Covers (not bundled; downloaded when the user asks): libretro thumbnails,
+  https://thumbnails.libretro.com; TheGamesDB, https://thegamesdb.net (with the user's own key); RAWG,
+  https://rawg.io (with the user's own key). Each source's own terms apply to the pictures.
+
+- assets/gamedb2/gamedb-ps2.tsv: PS2 game titles by serial, from GameDB-PS2 by niemasd
+  (https://github.com/niemasd/GameDB-PS2), GPL-3.0. GameDB's sources for it are GameFAQs,
+  MiSTer Addons, PlayStation Datacenter, Redump and VGCollect. The list is used as the title
+  for the TheGamesDB and RAWG lookups. Changed: the file is a plain tab-separated list.
+
+- assets/gamedb/psx.tsv: PS1 game titles and Redump-style names by serial, from GameDB-PSX by
+  niemasd (https://github.com/niemasd/GameDB-PSX), GPL-3.0. GameDB's sources for it are GameFAQs,
+  Glitchwave, MiSTer Addons, MobyGames, PlayStation Datacenter, Redump, Redump Wiki, ScreenScraper,
+  SerialStation and VGArchive. The title is used for the TheGamesDB and RAWG lookups, and the name
+  for the libretro lookup when Redump's disc list has no entry. Changed: the file is a plain
+  tab-separated list of serial, title and release name.
+
+- stb_easy_font by Sean Barrett. Public domain or MIT (your choice).
+  https://github.com/nothings/stb
+
+"PlayStation" and "PS5" are trademarks of Sony Interactive Entertainment Inc.
+PS Launcher is not affiliated with or endorsed by Sony.
+
+PS1 emulation (built, not yet linked into the app):
+
+- PSSwanStation by Press5elect (build 24): SwanStation with its PS5 port,
+  disc drive support and sandbox elevator.
+  https://github.com/Press5elect/PSSwanStation
+  GPL-3.0-or-later, with an additional term under section 7(b): anyone who
+  passes on this work or a work based on it must keep its author's
+  attributions and credit "PSSwanStation by Press5elect" wherever the work
+  shows its credits (third_party/psswanstation/ps5/licenses/ADDITIONAL-TERMS.txt).
+  This file is where PS Launcher gives the credit; the app has no credits
+  screen yet. Any credits screen added later must show the same line.
+
+- SwanStation, libretro's fork of DuckStation (PS1 emulator), on which
+  PSSwanStation is based. GPL-3.0.
+  https://github.com/libretro/swanstation
+
+- RADV Vulkan driver for PS5 by Mihawk-99 (Mesa, MIT) and the PS5 fork's
+  platform layer and headers (GPL-3.0-or-later), downloaded at build time.
+
+- Game names by serial number (assets/gamedb for PlayStation, assets/gamedb2 for
+  PlayStation 2: games.tsv, names.tsv, discs.tsv), made by PSSwanStation's
+  tools/make-gamedb.py from libretro-database's PlayStation and PlayStation 2 lists
+  (github.com/libretro/libretro-database). CC BY-SA 4.0 (licenses/CC-BY-SA-4.0.txt).
+  Changed: the lists are kept as plain text, not in a zip.
+- PS3 game titles by serial number (assets/gamedb/ps3.tsv): from GameTDB's PS3
+  database (https://www.gametdb.com, ps3tdb.xml). GameTDB's FAQ allows use in software
+  with a link to GameTDB, and asks to be told about the project. Serial and title only;
+  the region comes from the serial. The list is generated from ps3tdb.xml, not edited.
+
+- Sandbox elevator (sandbox-elevator.elf, used for USB disc drives): one-request
+  elevation helper from ps5-native-app-boilerplate by BlackBearReloaded, as
+  PSSwanStation carries it (third_party/psswanstation/ps5/elevator), with this
+  title's ID. Changed for PSSwanStation by Press5elect, and for PS Launcher
+  (title ID PPSA97500). GPL-3.0-or-later.
+- Sandbox elevation client (src/disc/elevator), the code that sends the elevator
+  to the ELF loader, from ps5-native-app-boilerplate by BlackBearReloaded, as
+  PSSwanStation carries it (ps5/src/ps5/elevation). Changed for PS Launcher: the
+  namespace is renamed. GPL-3.0-or-later.
+
+- Lapy elevation client (src/platform/elevation.cpp), ported from
+  ps5-native-app-boilerplate by BlackBearReloaded. GPL-3.0-or-later.
+  Unsandboxes this process so the emulator core can read /data directly.
+
+- lapy.elf (assets/lapy.elf): PS5 jailbreak helper by BlackBearReloaded /
+  ArkSama (Team PHU), built on libhijacker by illusion + LightingMod,
+  ps5-payload-sdk by John Törnblom. MIT License.
+  https://github.com/ArkSama/PS5-Lapy-JB-Daemon
+  Original from PSSwanStation (PPSA99248) by Press5elect.

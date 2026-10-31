@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""PSSwanStation - licenses/components.json of a staged title folder.
+
+    stage-notices.py APP_DIR SRC VULKAN_DIR SDK_DIR HUI_DIR LIBSMB2_DIR RCHEEVOS_DIR LAPY_DIR DATABASE_DIR
+
+Called by ps5/tools/build.sh. It writes every part of the title as data: what
+it is, its licence, which of the folder's files it is in, and the source it
+was built from, by address and revision. licenses/README.txt says the same
+for a reader; ps5/tools/release.py archives each part's source from this file.
+A part whose repository has uncommitted changes is recorded as "dirty": a
+release refuses it. No path of the machine that built it is written.
+
+SPDX-FileCopyrightText: 2026 Press5elect
+SPDX-License-Identifier: GPL-3.0-or-later
+"""
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+def git(repo, *args):
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def at(repo, remote=None):
+    """Where a checkout is: its address, its revision, and whether it differs from it."""
+    address = remote or git(repo, "remote", "get-url", "origin")
+    return dict(kind="git", remote=address.removesuffix(".git"), revision=git(repo, "rev-parse", "HEAD") or "unknown",
+                dirty=bool(git(repo, "status", "--porcelain", "--untracked-files=no")))
+
+
+def main():
+    app, src, vulkan, sdk, hui, libsmb2, rcheevos, lapy, database = (Path(a) for a in sys.argv[1:10])
+    libnfs = Path(sys.argv[10]) if len(sys.argv) > 10 else src.parent / "deps-src/libnfs"
+    slang = Path(sys.argv[11]) if len(sys.argv) > 11 else src.parent / "deps-src/slang-shaders"
+    glslang = Path(sys.argv[12]) if len(sys.argv) > 12 else src.parent / "deps-src/glslang"
+    mbedtls = Path(sys.argv[13]) if len(sys.argv) > 13 else src.parent / "deps-src/mbedtls-3.6.7"
+    ffmpeg = Path(sys.argv[14]) if len(sys.argv) > 14 else src.parent / "deps-src/ffmpeg-n9.0.2"
+    parts = []
+    title = at(src, "https://github.com/Press5elect/PSSwanStation")
+    parts.append(dict(
+        id="psswanstation",
+        name="PSSwanStation: SwanStation (the emulator, with the libraries in its tree: libchdr with LZMA and zstd, "
+             "xxHash, Xbyak, stb, libretro-common, OpenBIOS) and the PS5 frontend in ps5/ (with miniz, stb_vorbis, "
+             "stb_truetype, pugixml and nanosvg (ES-DE themes), "
+             "dr_mp3, AMD's FSR 1 and CAS headers, NVIDIA Image Scaling, AMD FidelityFX SDK's FSR3 optical flow through swordpdf's ps5-framegen "
+             "and Mihawk's MihawkGen frame generation with its network, and PS5SX2's USB pad decoder, an HTTPS client of its own on mbedTLS, Crux2's clock and pacing wait, the disc drive after DuckStation's (GPL) "
+             "and 5S2CD's disc readers, "
+             "Project Nayuki's QR Code generator, the sandbox elevation "
+             "client and Font Awesome Free's icons)",
+        licence="GPL-3.0 as a whole; the PS5 title Copyright (C) 2026 Press5elect, with an attribution term "
+                "under section 7(b) (licenses/ADDITIONAL-TERMS.txt); each library's own in licenses/README.txt",
+        artifacts=["eboot.bin", "sce_sys/", "README.txt", "CHANGELOG.txt", "PRIVACY.md", "LEGAL.txt", "licenses/"],
+        source=title))
+    parts.append(dict(
+        id="ps5-vulkan", name="PS5_Vulkan: the RADV link recipe, the packaging tool and sce_module/libc.prx",
+        licence="GPL-3.0-or-later", artifacts=["eboot.bin", "sce_module/libc.prx"], source=at(vulkan)))
+    revision = (sdk / ".ps5-sdk-revision").read_text().strip() if (sdk / ".ps5-sdk-revision").exists() else "unknown"
+    parts.append(dict(
+        id="platform", name="the PS5 platform layer (libps5platform.a) and the SDK headers, from the payload SDK fork, "
+                            "with musl's regex and dlmalloc",
+        licence="GPL-3.0-or-later; musl's regex MIT; dlmalloc public domain", artifacts=["eboot.bin"],
+        source=dict(kind="git", remote="https://github.com/mihawk-99/PS5_PayloadSDK", revision=revision, dirty=False)))
+    provenance = vulkan / ".deps/native/radv-release/PROVENANCE.txt"
+    text = provenance.read_text() if provenance.exists() else ""
+    mesa = re.search(r"^revision: ([0-9a-f]{40})", text, re.M)
+    radv_sdk = re.search(r"^sdk: ([0-9a-f]{40})", text, re.M)
+    parts.append(dict(
+        id="radv", name="RADV, Mesa's Vulkan driver (with ACO, NIR and Mesa's Vulkan runtime), from the PS5_Mesa fork",
+        licence="MIT, with other licences stated per file (licenses/Mesa-license.rst)", artifacts=["eboot.bin"],
+        source=dict(kind="git", remote="https://github.com/mihawk-99/PS5_Mesa", revision=mesa.group(1) if mesa else "unknown",
+                    dirty=False, built_with_sdk=radv_sdk.group(1) if radv_sdk else None)))
+    parts.append(dict(
+        id="llvm-runtime", name="LLVM libc++, libc++abi, libunwind and compiler-rt builtins (linked into eboot.bin)",
+        licence="Apache-2.0 WITH LLVM-exception", artifacts=["eboot.bin"],
+        source=dict(kind="fixed", revision="ps5-payload-dev SDK release archives",
+                    url="https://github.com/ps5-payload-dev/sdk/releases")))
+    parts.append(dict(
+        id="ps5-vkhomebrewui",
+        name="the interface kit: BlackBearReloaded's ps5-homebrew-ui through mihawk-99's PS5_VKHomebrewUI (its "
+             "Vulkan backend): shapes, text, themes, components, springs and the mixer, in eboot.bin; its fonts "
+             "re-baked by ps5/tools/bake-fonts.sh (Inter, Montserrat, Press Start 2P and Patrick Hand under the "
+             "SIL OFL 1.1, DejaVu Sans Mono under the Bitstream Vera licence), and its recorded sounds and songs "
+             "in assets/hui",
+        licence="GPL-3.0-or-later; the fonts OFL-1.1 and Bitstream Vera (licenses/README.txt)",
+        artifacts=["eboot.bin", "assets/hui/"], source=at(hui, "https://github.com/mihawk-99/PS5_VKHomebrewUI")))
+    parts.append(dict(id="libsmb2", name="libsmb2 (network shares)", licence="LGPL-2.1-or-later", artifacts=["eboot.bin"],
+                      source=at(libsmb2)))
+    parts.append(dict(id="libnfs", name="libnfs (NFS shares)", licence="LGPL-2.1-or-later; its protocol files BSD-2-Clause",
+                      artifacts=["eboot.bin"], source=at(libnfs)))
+    parts.append(dict(id="rcheevos", name="rcheevos (RetroAchievements)", licence="MIT", artifacts=["eboot.bin"],
+                      source=at(rcheevos)))
+    parts.append(dict(id="mbedtls", name="mbedTLS 3.6 (HTTPS once the sandbox elevator has run: RetroAchievements, "
+                      "covers, the updater)", licence="Apache-2.0 (licenses/Apache-2.0.txt)", artifacts=["eboot.bin"],
+                      source=at(mbedtls)))
+    parts.append(dict(id="ffmpeg", name="FFmpeg 9.0.2 (ES-DE themes' videos): libavformat with the MP4 demuxer, libavcodec "
+                      "with the H.264, AAC and MP3 decoders and their parsers, and libavutil, configured by "
+                      "ps5/tools/build-ffmpeg.sh", licence="LGPL-2.1-or-later (licenses/LGPL-2.1.txt)",
+                      artifacts=["eboot.bin"], source=at(ffmpeg, "https://github.com/FFmpeg/FFmpeg")))
+    parts.append(dict(id="glslang", name="glslang (shader presets brought in from a USB drive are compiled with it)",
+                      licence="BSD-3-Clause, with parts under BSD-2-Clause, MIT, Apache-2.0 and GPL-3.0-or-later with the "
+                              "Bison exception (licenses/glslang-LICENSE.txt)", artifacts=["eboot.bin"], source=at(glslang)))
+    note = (lapy / "SOURCE.txt").read_text() if (lapy / "SOURCE.txt").exists() else ""
+    remote = re.search(r"^remote: (\S+)", note, re.M)
+    rev = re.search(r"^revision: ([0-9a-f]{40})", note, re.M)
+    built = re.search(r"^built with: (.+)", note, re.M)
+    manifest = json.loads((lapy / "lapy-manifest.json").read_text())
+    parts.append(dict(
+        id="lapy", name="the Lapy helper (lapy.elf): PS5-Lapy-JB-Daemon's one-shot helper for this title, built unchanged",
+        licence="MIT", artifacts=["lapy.elf", "lapy-manifest.json"],
+        source=dict(kind="git", remote=remote.group(1) if remote else "unknown", revision=rev.group(1) if rev else "unknown",
+                    dirty=False, built_with=built.group(1) if built else "unknown", elf_sha256=manifest.get("elf_sha256"))))
+    if (app / "assets/gamedb.zip").exists():
+        source = at(database)
+        source["paths"] = ["metadat/developer/Sony - PlayStation.dat", "metadat/redump/Sony - PlayStation.dat", "LICENSE"]
+        parts.append(dict(
+            id="gamedb", name="the game database (assets/gamedb.zip): the libretro database's PlayStation lists, "
+                              "rearranged by ps5/tools/make-gamedb.py",
+            licence="CC BY-SA 4.0", artifacts=["assets/gamedb.zip"], source=source))
+    if (app / "assets/libretro-cheats.zip").exists():
+        source = at(database)
+        source["paths"] = ["cht/Sony - PlayStation", "metadat/redump/Sony - PlayStation.dat", "LICENSE"]
+        parts.append(dict(
+            id="libretro-cheats", name="the libretro cheats (assets/libretro-cheats.zip): the libretro database's "
+                                      "PlayStation cheat files, matched to serials by ps5/tools/make-libretro-cheats.py",
+            licence="CC BY-SA 4.0", artifacts=["assets/libretro-cheats.zip"], source=source))
+    if (app / "assets/shaders/crt-guest-advanced/chain.txt").exists():
+        source = at(slang)
+        source["paths"] = ["crt/crt-guest-advanced.slangp", "crt/shaders/guest/advanced"]
+        parts.append(dict(
+            id="slang-shaders", name="crt-guest-advanced by guest(r), from the libretro slang shaders "
+                                    "(assets/shaders/crt-guest-advanced): its passes compiled to SPIR-V by "
+                                    "ps5/tools/make-chains.py, its lookup pictures unchanged",
+            licence="GPL-2.0-or-later", artifacts=["assets/shaders/"], source=source))
+    for name in ("cheats.zip", "patches.zip"):
+        if (app / "assets" / name).exists():
+            parts.append(dict(
+                id="chtdb-" + name.split(".")[0], name="the chtdb project's " + name + ", an unmodified release file",
+                licence="none given: the entries belong to their authors (a release refuses this part)",
+                artifacts=["assets/" + name],
+                source=dict(kind="fixed", revision="the release named latest", url="https://github.com/duckstation/chtdb/releases")))
+    if (app / "assets/cacert.pem").exists():
+        parts.append(dict(
+            id="cacert", name="Mozilla's root certificates (assets/cacert.pem), as certifi 2026.07.22 carries them, "
+                              "unchanged: read beside the console's list by the title's own TLS",
+            licence="MPL-2.0 (licenses/MPL-2.0.txt, licenses/certifi-LICENSE.txt)", artifacts=["assets/cacert.pem"],
+            source=dict(kind="fixed", revision="2026.07.22", url="https://pypi.org/project/certifi/2026.7.22/")))
+    (app / "licenses").mkdir(exist_ok=True)
+    (app / "licenses/components.json").write_text(json.dumps(parts, indent=1, ensure_ascii=False) + "\n")
+    dirty = [p["id"] for p in parts if p["source"].get("dirty")]
+    print("notices: licenses/components.json (%d parts%s)" % (len(parts), "; dirty: " + ", ".join(dirty) if dirty else ""))
+
+
+if __name__ == "__main__":
+    main()

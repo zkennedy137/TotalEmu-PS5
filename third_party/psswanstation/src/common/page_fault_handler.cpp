@@ -1,0 +1,321 @@
+#include "page_fault_handler.h"
+#include "lockfree.h"
+#include "log.h"
+#include "platform.h"
+#include <cerrno>
+#include <cstring>
+Log_SetChannel(Common::PageFaultHandler);
+
+#if defined(_WIN32)
+#include "windows_headers.h"
+#elif defined(__linux__) || defined(__ANDROID__)
+#include <signal.h>
+#include <ucontext.h>
+#include <unistd.h>
+#define USE_SIGSEGV 1
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+#include <signal.h>
+#include <unistd.h>
+#define USE_SIGSEGV 1
+#if defined(__PROSPERO__)
+// PS5: the machine context is the console's (the payload SDK fork places
+// uc_mcontext where the console does), and an access to an unmapped page may
+// arrive as SIGBUS as well as SIGSEGV.
+#include <cerrno>
+#include <ucontext.h>
+#include <ps5platform/context.h>
+#define USE_SIGBUS 1
+#endif
+#endif
+
+namespace Common::PageFaultHandler {
+
+/* (callback, owner) pairs; walked lock-free from the fault handler. */
+static AtomicPairTable<8> m_handlers;
+static thread_local bool s_in_handler;
+
+#if (defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))) || defined(USE_SIGSEGV)
+static bool DispatchFault(void* exception_pc, void* exception_address, bool is_write)
+{
+  return m_handlers.ForEach([&](void* callback, void*) {
+    return reinterpret_cast<Callback>(callback)(exception_pc, exception_address, is_write) ==
+           HandlerResult::ContinueExecution;
+  });
+}
+#endif
+
+static bool HasHandlers()
+{
+  return m_handlers.ForEach([](void*, void*) { return true; });
+}
+
+#if defined(CPU_AARCH32)
+static bool IsStoreInstruction(const void* ptr)
+{
+  uint32_t bits;
+  std::memcpy(&bits, ptr, sizeof(bits));
+
+  // TODO
+  return false;
+}
+
+#elif defined(CPU_AARCH64)
+static bool IsStoreInstruction(const void* ptr)
+{
+  uint32_t bits;
+  std::memcpy(&bits, ptr, sizeof(bits));
+
+  // Based on vixl's disassembler Instruction::IsStore().
+  // if (Mask(LoadStoreAnyFMask) != LoadStoreAnyFixed)
+  if ((bits & 0x0a000000) != 0x08000000)
+    return false;
+
+  // if (Mask(LoadStorePairAnyFMask) == LoadStorePairAnyFixed)
+  if ((bits & 0x3a000000) == 0x28000000)
+  {
+    // return Mask(LoadStorePairLBit) == 0
+    return (bits & (1 << 22)) == 0;
+  }
+
+  switch (bits & 0xC4C00000)
+  {
+    case 0x00000000: // STRB_w
+    case 0x40000000: // STRH_w
+    case 0x80000000: // STR_w
+    case 0xC0000000: // STR_x
+    case 0x04000000: // STR_b
+    case 0x44000000: // STR_h
+    case 0x84000000: // STR_s
+    case 0xC4000000: // STR_d
+    case 0x04800000: // STR_q
+      return true;
+
+    default:
+      return false;
+  }
+}
+#endif
+
+#if defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))
+static PVOID s_veh_handle;
+
+static LONG ExceptionHandler(PEXCEPTION_POINTERS exi)
+{
+  if (exi->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || s_in_handler)
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  s_in_handler = true;
+
+#if defined(_M_AMD64)
+  void* const exception_pc = reinterpret_cast<void*>(exi->ContextRecord->Rip);
+#elif defined(_M_ARM64)
+  void* const exception_pc = reinterpret_cast<void*>(exi->ContextRecord->Pc);
+#else
+  void* const exception_pc = nullptr;
+#endif
+
+  void* const exception_address = reinterpret_cast<void*>(exi->ExceptionRecord->ExceptionInformation[1]);
+  bool const is_write = exi->ExceptionRecord->ExceptionInformation[0] == 1;
+
+  if (DispatchFault(exception_pc, exception_address, is_write))
+  {
+    s_in_handler = false;
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
+
+  s_in_handler = false;
+
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+uint32_t GetHandlerCodeSize()
+{
+  return 0;
+}
+
+#elif defined(USE_SIGSEGV)
+
+static struct sigaction s_old_sigsegv_action;
+#if defined(__APPLE__) || defined(__aarch64__) || defined(USE_SIGBUS)
+static struct sigaction s_old_sigbus_action;
+#endif
+
+static void SIGSEGVHandler(int sig, siginfo_t* info, void* ctx)
+{
+#if !defined(__PROSPERO__)
+  if ((info->si_code != SEGV_MAPERR && info->si_code != SEGV_ACCERR) || s_in_handler)
+    return;
+#endif
+
+#if defined(__linux__) || defined(__ANDROID__)
+  void* const exception_address = reinterpret_cast<void*>(info->si_addr);
+
+#if defined(CPU_X64)
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.gregs[REG_RIP]);
+  const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
+#elif defined(CPU_AARCH32)
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.arm_pc);
+  const bool is_write = IsStoreInstruction(exception_pc);
+#elif defined(CPU_AARCH64)
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.pc);
+  const bool is_write = IsStoreInstruction(exception_pc);
+#else
+  void* const exception_pc = nullptr;
+  const bool is_write = false;
+#endif
+
+#elif defined(__APPLE__)
+
+#if defined(CPU_X64)
+  void* const exception_address =
+    reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__faultvaddr);
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss.__rip);
+  const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__err & 2) != 0;
+#elif defined(CPU_AARCH64)
+  void* const exception_address = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__far);
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss.__pc);
+  const bool is_write = IsStoreInstruction(exception_pc);
+#else
+  void* const exception_address = reinterpret_cast<void*>(info->si_addr);
+  void* const exception_pc = nullptr;
+  const bool is_write = false;
+#endif
+
+#elif defined(__FreeBSD__)
+
+#if defined(CPU_X64)
+  void* const exception_address = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.mc_addr);
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.mc_rip);
+  const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext.mc_err & 2) != 0;
+#elif defined(CPU_AARCH64)
+  void* const exception_address = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__es.__far);
+  void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss.__pc);
+  const bool is_write = IsStoreInstruction(exception_pc);
+#else
+  void* const exception_address = reinterpret_cast<void*>(info->si_addr);
+  void* const exception_pc = nullptr;
+  const bool is_write = false;
+#endif
+
+#endif
+
+  if (DispatchFault(exception_pc, exception_address, is_write))
+  {
+    s_in_handler = false;
+    return;
+  }
+
+  // call old signal handler
+#if !defined(__APPLE__) && !defined(__aarch64__) && !defined(USE_SIGBUS)
+  const struct sigaction& sa = s_old_sigsegv_action;
+#else
+  const struct sigaction& sa = (sig == SIGBUS) ? s_old_sigbus_action : s_old_sigsegv_action;
+#endif
+  if ((sa.sa_flags & SA_SIGINFO) && sa.sa_sigaction)
+    sa.sa_sigaction(sig, info, ctx);
+  else if (sa.sa_handler == SIG_DFL)
+    signal(sig, SIG_DFL);
+  else if (sa.sa_handler == SIG_IGN)
+    return;
+  else
+    sa.sa_handler(sig);
+}
+
+uint32_t GetHandlerCodeSize()
+{
+  return 0;
+}
+
+#else
+
+uint32_t GetHandlerCodeSize()
+{
+  return 0;
+}
+
+#endif
+
+bool InstallHandler(const void* owner, void* start_pc, uint32_t code_size, Callback callback)
+{
+  if (m_handlers.ForEach([owner](void*, void* b) { return b == owner; }))
+    return false;
+
+  const bool was_empty = !HasHandlers();
+
+  if (was_empty)
+  {
+#if defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))
+    s_veh_handle = AddVectoredExceptionHandler(1, ExceptionHandler);
+    if (!s_veh_handle)
+    {
+      Log_ErrorPrint("Failed to add vectored exception handler");
+      return false;
+    }
+#elif defined(USE_SIGSEGV)
+    struct sigaction sa = {};
+    sa.sa_sigaction = SIGSEGVHandler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, &s_old_sigsegv_action) < 0)
+    {
+      Log_ErrorPrintf("sigaction(SIGSEGV) failed: %d", errno);
+      return false;
+    }
+#if defined(__APPLE__) || defined(__aarch64__) || defined(USE_SIGBUS)
+    if (sigaction(SIGBUS, &sa, &s_old_sigbus_action) < 0)
+    {
+      Log_ErrorPrintf("sigaction(SIGBUS) failed: %d", errno);
+      return false;
+    }
+#endif
+
+#else
+    return false;
+#endif
+  }
+
+  if (!m_handlers.Insert(reinterpret_cast<void*>(callback), const_cast<void*>(owner)))
+  {
+    Log_ErrorPrint("Too many page fault handlers");
+    return false;
+  }
+  return true;
+}
+
+bool RemoveHandler(const void* owner)
+{
+  if (!m_handlers.Remove([owner](void*, void* b) { return b == owner; }))
+    return false;
+
+  if (!HasHandlers())
+  {
+#if defined(_WIN32) && (defined(CPU_X64) || defined(CPU_AARCH64))
+    RemoveVectoredExceptionHandler(s_veh_handle);
+    s_veh_handle = nullptr;
+#elif defined(USE_SIGSEGV)
+    // restore old signal handler
+#if defined(__APPLE__) || defined(__aarch64__) || defined(USE_SIGBUS)
+    if (sigaction(SIGBUS, &s_old_sigbus_action, nullptr) < 0)
+    {
+      Log_ErrorPrintf("sigaction(SIGBUS) failed: %d", errno);
+      return false;
+    }
+    s_old_sigbus_action = {};
+#endif
+
+    if (sigaction(SIGSEGV, &s_old_sigsegv_action, nullptr) < 0)
+    {
+      Log_ErrorPrintf("sigaction(SIGSEGV) failed: %d", errno);
+      return false;
+    }
+
+    s_old_sigsegv_action = {};
+#else
+    return false;
+#endif
+  }
+
+  return true;
+}
+
+} // namespace Common::PageFaultHandler

@@ -1,0 +1,382 @@
+# PSSwanStation: the title's build (ps5/tools/build.sh drives it).
+#
+# SwanStation is a libretro core. This project compiles the core as it is
+# (dep/, src/common, src/core, src/libretro), links it statically into a title
+# of its own, and adds the frontend in ps5/src: the display, the library, the
+# settings, cheats, audio, the DualSense and the network share.
+#
+# Two builds come from it:
+#   - the title, with ps5/toolchain.cmake (SWANSTATION_PS5 is set there): the
+#     objects are handed to ps5/tools/link.sh, which links them with RADV and
+#     signs the result;
+#   - a host build (no toolchain file), the same frontend on the PC's Vulkan
+#     driver with a headless surface, which ps5/tools/host-test.sh runs to
+#     check the interface and the emulator without a console.
+#
+# SPDX-FileCopyrightText: 2026 Press5elect
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+cmake_minimum_required(VERSION 3.20)
+project(swanstation_ps5 C CXX)
+
+set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set(LIBSMB2_DIR "${ROOT}/../deps-src/libsmb2" CACHE PATH "libsmb2")
+set(RCHEEVOS_DIR "${ROOT}/../deps-src/rcheevos" CACHE PATH "rcheevos (v12)")
+# BlackBearReloaded's ps5-homebrew-ui kit, through mihawk-99's PS5_VKHomebrewUI
+# (its Vulkan backend), at the revision ps5/tools/build.sh checks.
+set(HUI_DIR "${ROOT}/../PS5_VKHomebrewUI" CACHE PATH "PS5_VKHomebrewUI (the interface kit)")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-switch")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-switch")
+
+# What SwanStation's own top-level CMakeLists.txt sets for its subdirectories.
+set(CPU_ARCH "x64")
+set(USE_EGL OFF)
+set(USE_WAYLAND OFF)
+set(USE_D3D12 OFF)
+set(USE_FBDEV OFF)
+set(USE_EVDEV OFF)
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
+if(SWANSTATION_PS5)
+	# A title's file mappings are charged to its small flexible memory:
+	# disc images are read, not mapped.
+	set(LIBRETRO_COMMON_NO_MMAP ON CACHE BOOL "" FORCE)
+endif()
+
+execute_process(COMMAND git describe --tags --always WORKING_DIRECTORY ${ROOT}
+	OUTPUT_VARIABLE GIT_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${ROOT}
+	OUTPUT_VARIABLE GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+string(TIMESTAMP BUILD_TIMESTAMP UTC)
+configure_file(${ROOT}/src/libretro/version.h.in ${CMAKE_BINARY_DIR}/gen/version.h @ONLY)
+
+include(CheckSymbolExists)
+check_symbol_exists(alloca "alloca.h" HAVE_ALLOCA_H)
+if(NOT HAVE_ALLOCA_H)
+	check_symbol_exists(alloca "malloc.h" HAVE_MALLOC_H)
+endif()
+if(NOT SWANSTATION_PS5)
+	check_symbol_exists(mkstemp "stdlib.h" HAVE_MKSTEMP)
+endif()
+configure_file(${ROOT}/src/config.h.cmake ${CMAKE_BINARY_DIR}/gen/config.h)
+include_directories(${CMAKE_BINARY_DIR}/gen)
+
+# The title owns the Vulkan device (src/core/gpu_hw_vulkan.cpp keeps it alive
+# when a game ends).
+add_compile_definitions(SWANSTATION_STANDALONE=1)
+# One retro_atomic backend for C and C++ alike, never std::atomic (as SwanStation's own CMakeLists.txt).
+add_compile_definitions(RETRO_ATOMIC_FORCE_GCC_NEW)
+
+# The frontend compresses save states and reads the cheat database's ZIP
+# archives with the core's miniz (dep/libchdr/deps/miniz-3.1.1/miniz.h keeps
+# those APIs when SWANSTATION_STANDALONE is defined).
+set(MINIZ_ARCHIVE_APIS ON CACHE BOOL "" FORCE)
+set(MINIZ_DEFLATE_APIS ON CACHE BOOL "" FORCE)
+add_subdirectory(${ROOT}/dep dep)
+add_subdirectory(${ROOT}/src/common common)
+add_subdirectory(${ROOT}/src/core core)
+
+# libsmb2 (LGPL-2.1): games on SMB shares. Compiled from a checkout, with
+# ps5/smb/config.h; the names the console lacks are bound to ps5/smb/compat.c.
+set(LIBSMB2_NAMES
+	aes aes_reference aes128ccm alloc asn1-ber compat errors hmac hmac-md5 init libsmb2 md4c md5 ntlmssp pdu
+	sha1 sha224-256 sha384-512 smb2-cmd-cancel smb2-cmd-close smb2-cmd-create smb2-cmd-echo smb2-cmd-error
+	smb2-cmd-flush smb2-cmd-ioctl smb2-cmd-lock smb2-cmd-logoff smb2-cmd-negotiate smb2-cmd-notify-change
+	smb2-cmd-oplock-break smb2-cmd-query-directory smb2-cmd-query-info smb2-cmd-read smb2-cmd-session-setup
+	smb2-cmd-set-info smb2-cmd-tree-connect smb2-cmd-tree-disconnect smb2-cmd-write smb2-data-file-info
+	smb2-data-filesystem-info smb2-data-security-descriptor smb2-data-reparse-point smb2-share-enum smb3-seal
+	smb2-signing socket spnego-wrapper sync timestamps unicode usha)
+set(LIBSMB2_SOURCES)
+foreach(name ${LIBSMB2_NAMES})
+	list(APPEND LIBSMB2_SOURCES "${LIBSMB2_DIR}/lib/${name}.c")
+endforeach()
+if(SWANSTATION_PS5)
+	add_library(smb2 STATIC ${LIBSMB2_SOURCES} smb/compat.c)
+	target_include_directories(smb2 BEFORE PRIVATE smb)
+	target_compile_definitions(smb2 PRIVATE HAVE_CONFIG_H "_U_=__attribute__((unused))" SOL_TCP=6
+		getlogin_r=ps5_smb_getlogin_r gethostname=ps5_smb_gethostname readv=ps5_smb_readv writev=ps5_smb_writev
+		getaddrinfo=ps5_smb_getaddrinfo freeaddrinfo=ps5_smb_freeaddrinfo
+		fcntl=ps5_smb_fcntl connect=ps5_smb_connect)
+else()
+	add_library(smb2 STATIC ${LIBSMB2_SOURCES})
+	target_include_directories(smb2 BEFORE PRIVATE smb/host)
+	target_compile_definitions(smb2 PRIVATE HAVE_CONFIG_H "_U_=__attribute__((unused))" _GNU_SOURCE)
+endif()
+target_include_directories(smb2 PRIVATE "${LIBSMB2_DIR}/include" "${LIBSMB2_DIR}/include/smb2" "${LIBSMB2_DIR}/lib")
+target_include_directories(smb2 INTERFACE "${LIBSMB2_DIR}/include")
+target_compile_options(smb2 PRIVATE -w)
+
+# mbedTLS 3.6 LTS (Apache-2.0): the TLS of src/tls_client.cpp, for HTTPS once
+# the console's own client cannot be used (after the sandbox elevator). Its
+# library/ as it is, with src/mbedtls_config_fe.h over the default
+# configuration.
+set(MBEDTLS_DIR "${ROOT}/../deps-src/mbedtls-3.6.7" CACHE PATH "mbedTLS 3.6.7")
+file(GLOB MBEDTLS_SOURCES "${MBEDTLS_DIR}/library/*.c")
+add_library(mbedtls_fe STATIC ${MBEDTLS_SOURCES})
+target_include_directories(mbedtls_fe PUBLIC "${MBEDTLS_DIR}/include" PRIVATE "${MBEDTLS_DIR}/library")
+target_compile_definitions(mbedtls_fe PUBLIC
+	"MBEDTLS_USER_CONFIG_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/src/mbedtls_config_fe.h\"")
+# Its __FILE__ (in the TLS code's error paths) without this machine's paths.
+get_filename_component(MBEDTLS_REAL_DIR "${MBEDTLS_DIR}" REALPATH)
+target_compile_options(mbedtls_fe PRIVATE -w "-ffile-prefix-map=${MBEDTLS_REAL_DIR}/=mbedtls/"
+	"-ffile-prefix-map=${MBEDTLS_DIR}/=mbedtls/")
+if(SWANSTATION_PS5)
+	target_compile_definitions(mbedtls_fe PRIVATE SWANSTATION_PS5=1)
+endif()
+
+# libnfs (LGPL-2.1-or-later): NFS shares, versions 3 and 4, AUTH_SYS. Built
+# from its sources as libsmb2 is; on the console with the same socket shims
+# (nfs/compat.c, and libsmb2's in smb/compat.c).
+set(LIBNFS_DIR "${ROOT}/../deps-src/libnfs" CACHE PATH "libnfs")
+set(LIBNFS_SOURCES)
+foreach(name lib/init lib/libnfs lib/libnfs-sync lib/libnfs-zdr lib/multithreading lib/nfs_v3 lib/nfs_v4 lib/pdu
+		lib/socket mount/mount mount/libnfs-raw-mount nfs/nfs nfs/nfsacl nfs/libnfs-raw-nfs nfs4/nfs4
+		nfs4/libnfs-raw-nfs4 nlm/nlm nlm/libnfs-raw-nlm nsm/nsm nsm/libnfs-raw-nsm portmap/portmap
+		portmap/libnfs-raw-portmap rquota/rquota rquota/libnfs-raw-rquota)
+	list(APPEND LIBNFS_SOURCES "${LIBNFS_DIR}/${name}.c")
+endforeach()
+if(SWANSTATION_PS5)
+	add_library(nfs STATIC ${LIBNFS_SOURCES} nfs/compat.c)
+	target_include_directories(nfs BEFORE PRIVATE nfs)
+	target_compile_definitions(nfs PRIVATE HAVE_CONFIG_H HAVE_NFS4_2 "_U_=__attribute__((unused))"
+		readv=ps5_smb_readv writev=ps5_smb_writev getaddrinfo=ps5_smb_getaddrinfo freeaddrinfo=ps5_smb_freeaddrinfo
+		connect=ps5_smb_connect fcntl=ps5_nfs_fcntl ioctl=ps5_nfs_ioctl recv=ps5_nfs_recv
+		getservbyport=ps5_nfs_getservbyport getprotobyname=ps5_nfs_getprotobyname
+		getuid=ps5_nfs_getuid getgid=ps5_nfs_getgid strndup=ps5_nfs_strndup)
+	target_link_libraries(nfs PRIVATE smb2)
+else()
+	add_library(nfs STATIC ${LIBNFS_SOURCES})
+	target_include_directories(nfs BEFORE PRIVATE nfs/host)
+	target_compile_definitions(nfs PRIVATE HAVE_CONFIG_H HAVE_NFS4_2 "_U_=__attribute__((unused))" _GNU_SOURCE)
+endif()
+target_include_directories(nfs PRIVATE "${LIBNFS_DIR}/include" "${LIBNFS_DIR}/include/nfsc" "${LIBNFS_DIR}/mount"
+	"${LIBNFS_DIR}/nfs" "${LIBNFS_DIR}/nfs4" "${LIBNFS_DIR}/nlm" "${LIBNFS_DIR}/nsm" "${LIBNFS_DIR}/portmap"
+	"${LIBNFS_DIR}/rquota")
+target_include_directories(nfs INTERFACE "${LIBNFS_DIR}/include" "${LIBNFS_DIR}/mount" "${LIBNFS_DIR}/nfs")
+target_compile_options(nfs PRIVATE -w)
+
+# rcheevos (MIT): RetroAchievements. Its client, the server API, the
+# achievement runtime and the hash of a PlayStation disc; nothing for other
+# systems. The three definitions are needed by whatever includes its headers
+# too (they change a structure's layout).
+set(RCHEEVOS_NAMES
+	rc_client rc_compat rc_util rc_version
+	rapi/rc_api_common rapi/rc_api_info rapi/rc_api_runtime rapi/rc_api_user
+	rcheevos/alloc rcheevos/condition rcheevos/condset rcheevos/consoleinfo rcheevos/format rcheevos/lboard
+	rcheevos/memref rcheevos/operand rcheevos/richpresence rcheevos/runtime rcheevos/runtime_progress
+	rcheevos/trigger rcheevos/value
+	rhash/md5 rhash/hash rhash/hash_disc rhash/cdreader)
+set(RCHEEVOS_SOURCES)
+foreach(name ${RCHEEVOS_NAMES})
+	list(APPEND RCHEEVOS_SOURCES "${RCHEEVOS_DIR}/src/${name}.c")
+endforeach()
+add_library(rcheevos STATIC ${RCHEEVOS_SOURCES})
+target_include_directories(rcheevos PUBLIC "${RCHEEVOS_DIR}/include")
+
+# glslang: a shader preset brought in from a USB drive is compiled on the
+# console (src/slangimport.cpp). Its library alone: GLSL to SPIR-V, no HLSL,
+# no optimiser, no programs.
+set(GLSLANG_DIR "${ROOT}/../deps-src/glslang" CACHE PATH "glslang (16.6.0)")
+set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
+set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+set(ENABLE_PCH OFF CACHE BOOL "" FORCE)
+set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
+set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
+set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(ENABLE_SPIRV ON CACHE BOOL "" FORCE)
+if(SWANSTATION_PS5)
+	# The console's threads are in its libc: the probe glslang asks for would
+	# link a test program, which a payload cannot be.
+	set(CMAKE_HAVE_LIBC_PTHREAD 1 CACHE INTERNAL "")
+	set(CMAKE_HAVE_PTHREAD_H 1 CACHE INTERNAL "")
+	set(THREADS_PREFER_PTHREAD_FLAG OFF)
+endif()
+add_subdirectory(${GLSLANG_DIR} glslang EXCLUDE_FROM_ALL)
+target_compile_definitions(rcheevos PUBLIC RC_HASH_NO_ROM RC_HASH_NO_ZIP RC_HASH_NO_ENCRYPTED)
+target_compile_options(rcheevos PRIVATE -w)
+
+set(frontend_sources
+	src/main.cpp
+	src/storage.cpp
+	src/rewind.cpp
+	src/recorder.cpp
+	src/memsearch.cpp
+	src/speedrun.cpp
+	src/web.cpp
+	src/slangimport.cpp
+	third_party/qrcodegen/qrcodegen.cpp
+	third_party/pugixml/pugixml.cpp
+	third_party/ps5-framegen/src/ps5_framegen.cpp
+	third_party/mihawkgen/src/fg_common.cpp
+	third_party/mihawkgen/src/fg_vulkan.cpp
+	third_party/mihawkgen/src/fg_neural.cpp
+	third_party/mihawkgen/src/fg_splat.cpp
+	src/mihawkgen_model.cpp
+	src/tls_client.cpp
+	src/music.cpp
+	src/memcard.cpp
+	src/netplay.cpp
+	src/achievements.cpp
+	src/update.cpp
+	src/ui_more.cpp
+	src/ui_flow.cpp
+	src/ui_esde.cpp
+	src/video.cpp
+	src/media.cpp
+	src/esde.cpp
+	src/fontbake.cpp
+	src/display.cpp
+	src/chain.cpp
+	src/host.cpp
+	src/pacing_wait.cpp
+	src/options.cpp
+	src/ui.cpp
+	src/ui_widgets.cpp
+	src/swan.cpp
+	src/library.cpp
+	src/cheats.cpp
+	src/audio.cpp
+	src/sound.cpp
+	src/vfs.cpp
+	src/smb.cpp
+	src/ftp.cpp
+	src/nfs.cpp
+	src/netfiles.cpp
+	src/covers.cpp
+	src/gamedb.cpp
+	src/history.cpp
+	src/diag.cpp
+	src/texture.cpp
+	src/hui_platform.cpp
+	src/video_ffmpeg.cpp)
+if(SWANSTATION_PS5)
+	list(APPEND frontend_sources
+		src/ps5/pad_ps5.cpp
+		src/ps5/usbpad_ps5.cpp
+		src/ps5/audio_ps5.cpp
+		src/ps5/http_ps5.cpp
+		src/ps5/libc_ps5.cpp
+		src/ps5/threads_ps5.cpp
+		src/ps5/stdio_ps5.cpp
+		src/ps5/platform_ps5.cpp
+		src/ps5/clock_ps5.c
+		src/ps5/drive_ps5.cpp
+		src/ps5/usbdrive_ps5.cpp
+		src/ps5/elevation/elevation.cpp)
+else()
+	list(APPEND frontend_sources src/host/platform_host.cpp)
+endif()
+
+# With the core's C++17: its disc header does not compile as C++20.
+set(frontend_cxx17_sources src/discid.cpp src/discdrive.cpp)
+
+set(core_glue_sources
+	${ROOT}/src/libretro/libretro_audio_stream.cpp
+	${ROOT}/src/libretro/libretro_game_settings.cpp
+	${ROOT}/src/libretro/libretro_host_display.cpp
+	${ROOT}/src/libretro/libretro_host_interface.cpp
+	${ROOT}/src/libretro/libretro_settings_interface.cpp)
+
+# The interface kit: shapes, SDF text, themes, components, springs, the mixer
+# and its cues. Not its OpenGL backend, its own console layer or its app (the
+# designs, the shell, the demo content), and not its stb_vorbis: music.cpp's
+# copy serves both. Its Vulkan backend draws through the same function table as
+# the rest of the title (dep/vulkan-loader), forced in ahead of its headers.
+file(GLOB hui_sources
+	${HUI_DIR}/src/gfx/draw_list.cpp ${HUI_DIR}/src/gfx/font.cpp ${HUI_DIR}/src/gfx/renderer.cpp
+	${HUI_DIR}/src/gfx/triangulate.cpp ${HUI_DIR}/src/gfx/vk/vk_renderer.cpp
+	${HUI_DIR}/src/ui/*.cpp ${HUI_DIR}/src/ui/components/*.cpp
+	${HUI_DIR}/src/core/*.cpp ${HUI_DIR}/src/audio/*.cpp)
+add_library(hui STATIC ${hui_sources})
+target_include_directories(hui PUBLIC ${HUI_DIR}/src)
+target_include_directories(hui PRIVATE ${ROOT}/dep/vulkan-loader/include)
+target_compile_options(hui PRIVATE -std=c++20 -w -fno-exceptions)
+set_source_files_properties(${HUI_DIR}/src/gfx/vk/vk_renderer.cpp PROPERTIES COMPILE_OPTIONS
+	"-include;${ROOT}/dep/vulkan-loader/include/vulkan_loader.h")
+
+# FFmpeg's MP4 demuxer and H.264, AAC and MP3 decoders (LGPL-2.1-or-later),
+# for ES-DE themes' videos: built by tools/build-ffmpeg.sh into the build
+# folder (once; again when its revision or the script changes).
+if(SWANSTATION_PS5)
+	set(FFMPEG_TARGET ps5)
+else()
+	set(FFMPEG_TARGET host)
+endif()
+set(FFMPEG_PREFIX "${CMAKE_BINARY_DIR}/ffmpeg")
+execute_process(COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tools/build-ffmpeg.sh" ${FFMPEG_TARGET} "${FFMPEG_PREFIX}"
+	RESULT_VARIABLE ffmpeg_result)
+if(NOT ffmpeg_result EQUAL 0)
+	message(FATAL_ERROR "FFmpeg did not build (tools/build-ffmpeg.sh)")
+endif()
+set(FFMPEG_LIBRARIES "${FFMPEG_PREFIX}/lib/libavformat.a" "${FFMPEG_PREFIX}/lib/libavcodec.a"
+	"${FFMPEG_PREFIX}/lib/libavutil.a")
+set_source_files_properties(src/video_ffmpeg.cpp PROPERTIES INCLUDE_DIRECTORIES "${FFMPEG_PREFIX}/include")
+
+add_executable(swanstation ${frontend_sources} ${frontend_cxx17_sources} ${core_glue_sources})
+target_link_libraries(swanstation PRIVATE hui core common glad vulkan-loader libretro-common stb xxhash miniz smb2 nfs rcheevos mbedtls_fe
+	glslang glslang-default-resource-limits ${FFMPEG_LIBRARIES})
+target_include_directories(swanstation PRIVATE src ${ROOT}/src/libretro
+	${ROOT}/dep/stb/include ${CMAKE_BINARY_DIR}/gen ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nis
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/qrcodegen ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ps5-framegen/src
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/src
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/include ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/src
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/ps5sx2-usbpad
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/pugixml ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanosvg
+	${HUI_DIR}/third_party/stb)
+# Vulkan is reached through the core's function table (dep/vulkan-loader),
+# which is filled from the RADV linked into the title.
+target_compile_definitions(swanstation PRIVATE VK_NO_PROTOTYPES
+	FE_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+# The fonts and the logo are assembled into ui_widgets.cpp's object.
+file(GLOB hui_fonts ${CMAKE_CURRENT_SOURCE_DIR}/assets/hui/fonts/*.huifont)
+set_source_files_properties(src/ui_widgets.cpp PROPERTIES OBJECT_DEPENDS
+	"${hui_fonts};${CMAKE_CURRENT_SOURCE_DIR}/assets/logo-box.png")
+set_source_files_properties(${frontend_sources} PROPERTIES COMPILE_OPTIONS "-std=c++20")
+# ps5-framegen, as it is: C++17, its Vulkan calls through the core's function table.
+set_source_files_properties(third_party/ps5-framegen/src/ps5_framegen.cpp PROPERTIES COMPILE_OPTIONS
+	"-std=c++17;-w;-DPS5_FRAMEGEN_VULKAN_HEADER=\"vulkan_loader.h\"")
+# MihawkGen (Mihawk, GPL-3.0-or-later), as it is: its Vulkan calls through the core's function table.
+set(mihawkgen_sources third_party/mihawkgen/src/fg_common.cpp third_party/mihawkgen/src/fg_vulkan.cpp
+	third_party/mihawkgen/src/fg_neural.cpp third_party/mihawkgen/src/fg_splat.cpp)
+set_source_files_properties(${mihawkgen_sources} PROPERTIES COMPILE_OPTIONS
+	"-std=c++20;-w;-include;${ROOT}/dep/vulkan-loader/include/vulkan_loader.h")
+# Its trained network (1.7 MB), assembled into the title.
+set_source_files_properties(src/mihawkgen_model.cpp PROPERTIES COMPILE_OPTIONS "-std=c++20"
+	COMPILE_DEFINITIONS "MIHAWKGEN_MODEL_PATH=\"${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/model/network.fgw\""
+	OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mihawkgen/model/network.fgw")
+# pugixml (ES-DE themes' XML) and stb_truetype (their fonts), as they are.
+set_source_files_properties(third_party/pugixml/pugixml.cpp src/fontbake.cpp PROPERTIES COMPILE_OPTIONS "-std=c++20;-w")
+# The two decoders in it are other people's C, compiled as they are.
+set_source_files_properties(src/music.cpp PROPERTIES COMPILE_OPTIONS "-std=c++20;-w")
+# The clock is C (C11 atomics), from Crux2.
+set_source_files_properties(src/ps5/clock_ps5.c PROPERTIES COMPILE_OPTIONS "-std=gnu11")
+# The build's date, in main.cpp alone so a new day recompiles one file.
+string(TIMESTAMP FE_BUILD_DATE "%Y-%m-%d" UTC)
+set_source_files_properties(src/main.cpp PROPERTIES COMPILE_DEFINITIONS "FE_BUILD_DATE=\"${FE_BUILD_DATE}\"")
+if(SWANSTATION_PS5)
+	target_compile_definitions(swanstation PRIVATE SWANSTATION_PS5=1)
+	# CMake gives the objects and archives, in link order, to link.sh, which
+	# links them with RADV and the console's runtime, then converts and signs.
+	set(CMAKE_CXX_LINK_EXECUTABLE
+		"bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/link.sh <TARGET> <OBJECTS> -- <LINK_LIBRARIES>")
+else()
+	target_compile_definitions(swanstation PRIVATE SWANSTATION_HOST=1)
+	target_link_libraries(swanstation PRIVATE dl pthread)
+endif()
+
+# The PC's test of the title's own TLS client (tests/tls/run.sh): a local
+# HTTPS server with a certificate of its own.
+if(NOT SWANSTATION_PS5)
+	add_executable(tls-test tests/tls/tls_test.cpp src/tls_client.cpp)
+	target_include_directories(tls-test PRIVATE src)
+	target_link_libraries(tls-test PRIVATE mbedtls_fe)
+	target_compile_options(tls-test PRIVATE -std=c++20)
+endif()

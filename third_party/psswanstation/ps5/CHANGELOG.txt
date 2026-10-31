@@ -1,0 +1,479 @@
+PSSwanStation - what changed
+============================
+
+Build 24
+  Added
+  - HD texture packs for 3D games too, by the GPU's texture cache blocks:
+    a pack's picture replaces a block of a texture page (64x64 texels of a
+    4-bit texture, 32x64 of an 8-bit one, 32x32 of a 15-bit one), named by
+    a hash of the block and its palette (block-4-<hash>.png and so on, in
+    textures/<serial>/). Pictures up to four times the block's size (eight
+    for 15-bit) are drawn smoothly. A primitive reading up to 2 x 2 blocks
+    is replaced; textures the game draws itself never are. Vulkan renderer.
+    Emulator, Enhancement: "HD Texture Packs" (on) and "Write Out Texture
+    Blocks", which puts each block a game shows in textures/<serial>/dump/
+    for pack makers.
+  - Accurate blending (Emulator, Enhancement, on): semi-transparency and
+    the mask bit worked out in the fragment shader the way the PlayStation
+    does, at 5 bits a channel, in drawing order, where the device can
+    (fragment shader interlock); without MSAA or the PGXP depth buffer.
+  - Exact lines (on): lines drawn pixel for pixel as the PlayStation steps
+    them, at every resolution.
+  - OPTIONS can be remapped: Settings, Controls, Buttons offers it for any
+    of the PlayStation's buttons, beside the touch pad's halves, and "The
+    menu opens with" gives the menu (and the shortcuts' key) to OPTIONS, a
+    half of the touch pad, or OPTIONS held for a second (OPTIONS then is the
+    game's too, without shortcuts). The Shortcuts page follows the choice.
+  Changed
+  - Every picture preset switches on accurate blending and exact lines.
+  - The Shortcuts page names the button that opens the menu, as set.
+  - The console's own information about the title gives its build as the
+    version: 01.024.000 for build 24 (it said 01.000.000 for every build).
+  - Newer parts: the RADV driver at PS5 Mesa 14c2f44 (fragment shader
+    barycentrics, with the 120 Hz settling and timed waits kept), libsmb2
+    and libnfs at their newest revisions (SMB request sizes kept within the
+    server's limits; NFSv4 leases renewed while mounted).
+  Fixed (SwanStation's newest fixes)
+  - A save state keeps a controller or memory card transfer in progress,
+    the disc that was in (a game on several discs, or no disc with the lid
+    closed) and the drive's lid, so loading it no longer swaps the disc or
+    upsets the controller.
+  - A damaged or mismatched save state is refused and the console reset,
+    instead of running on in a broken state; states made with an M3U
+    playlist load again.
+
+Build 23
+  Changed
+  - A LibCrypt-protected game whose disc image has no .sbi file beside it
+    no longer ends with "The game did not start" alone: PSSwanStation says
+    the disc needs its .sbi, names the file and the folder it goes in, and
+    offers to start it anyway. The game's details say whether the .sbi is
+    there ("LibCrypt: Protected; .sbi found", or "Missing <name>.sbi").
+  - A disc in the drive wears its cover: the cover is printed on the disc
+    in the Disc Drive tab and turns with it.
+  - Settings has nine sections instead of sixteen: Library, Look, Sound,
+    Picture, Controls (controllers, shortcuts and rewind together), Games
+    and saving (with RetroAchievements), Emulator (all of the emulator's
+    own sections in one list), System (notices and debugging) and About.
+    The descriptions are shorter. L2 and R2 jump between the parts of a
+    list. Settings is first in the menu.
+  - Square in the library (Sort and filter) has "Game videos" and "More
+    library settings".
+  Added
+  - Game videos in the library's own views: when the cursor stays on a
+    game for a moment, its video plays in the cover's place (Shelves, List
+    and the game's details) or behind the covers (Covers and the views in
+    space). Settings, Library, Videos: on or off, their sound, and the wait
+    (1, 2, 3 or 5 seconds). The same switch and sound are used by ES-DE
+    themes; the switches that were in "ES-DE themes" moved there.
+  - Mods: text files in mods/ (or PSSwanStation/mods on a USB drive) that
+    change a game a feature at a time without changing its disc image:
+    patches written only where the bytes the mod expects are found,
+    GameShark codes, and emulator options a feature needs. Under Cheats in
+    a game's details, each feature switched on and off by itself; mistakes
+    in a mod are named in the boot log. The format is in MANUAL.md.
+  - Use the game's own widescreen (Settings, Picture): with the picture set
+    wide, a game's widescreen patch from the patch database is used by
+    itself, instead of the general widescreen hack.
+  - Adaptive resolution (Settings, Picture): while a game cannot keep its
+    speed, the resolution scale is lowered a step at a time (to half the
+    one chosen at most), and raised again once it keeps its speed. Off as
+    it comes.
+  - PS5 Forwarder support: a forwarder (or anything that starts the title)
+    can name a game with --rom <path> (a full path, a path from the title
+    folder such as games/<folder>/<file>, or the game's name), and
+    --exit-after-game closes the title when that game is closed. A game not
+    found says so.
+  RetroAchievements
+  - Each request names PSSwanStation and its build number (its User-Agent),
+    as RetroAchievements asks of an emulator before it is approved for
+    hardcore mode.
+  - Playback of a recording cannot be started in hardcore mode, and stops if
+    hardcore mode comes on.
+  - The message at a game's start says whether it is in Hardcore mode or
+    Softcore.
+  - An unlock or leaderboard entry made while the server cannot be reached
+    is kept (data/achievements-unsent.txt) if the title closes first, and
+    sent after the next sign-in.
+  - PRIVACY.md: what leaves the console, where to, and what is kept.
+  ES-DE themes
+  - Themes made for ES-DE (es-de.org) can draw the whole library: the
+    theme's gamelist view for the PlayStation, with the library's games in
+    its text list, grid or carousel, its pictures (PNG, JPEG, SVG), fonts
+    (TrueType and OpenType), texts, the game's details, the favourite badge,
+    a clock and the help line. Square, View (or Settings, Library,
+    "Library view"): each theme found is "ES-DE: <name>".
+  - Settings, Library, "ES-DE themes": the theme, its variant, colour
+    scheme, font size, aspect ratio and language, as ES-DE's menu has them;
+    a variant's fallback when the games lack its pictures.
+  - "Get themes" fetches a theme from the list ES-DE's own downloader reads,
+    from its author's repository, into themes/ (videos and sounds left out).
+    Themes can also be copied into themes/ or PSSwanStation/themes on a USB
+    drive. Themes are their authors' and are not in releases.
+  - Pictures in ES-DE's folders (media/covers, media/screenshots,
+    media/marquees, media/miximages...; ES-DE's downloaded_media/psx copies in
+    as it is). Title screens and screenshots are fetched from the libretro
+    thumbnails collection with "Download covers" on.
+  - Videos: a theme's video element plays the game's video
+    (media/videos/<file name>.mp4, as ES-DE keeps them) after the theme's
+    delay, with its sound under the lowered menu music. The console refuses
+    a homebrew title its own video player, so PSSwanStation decodes them
+    itself with FFmpeg 9.0.2's MP4 demuxer and H.264, AAC and MP3 decoders
+    (LGPL-2.1-or-later; their source is published with each release).
+    Settings, Library, Videos switches them and their sound; the boot log's
+    "video:" lines say what each video was and why one did not play.
+  - Ratings are not shown, and the system view is not used.
+  - Pictures and videos are found in ES-DE's media folders wherever they
+    are: the title's folder, a USB drive, and every games folder (the
+    console's, USB drives', and SMB, NFS and FTP shares'): its own
+    videos/, covers/... folders (roms/psx/videos), media/ or
+    downloaded_media/psx/ inside it or beside it, and Batocera's images/
+    (<game>-thumb.png) and videos/<game>-video.mp4; read straight from a
+    share. The folders are listed in the background, not asked for picture by picture.
+    The library's covers come from there too when covers/ has none.
+
+Build 22
+  Added
+  - A third way to make frame generation's pictures: MihawkGen, Mihawk's
+    trained network (432,308 parameters, github.com/mihawk-99/PS5_MihawkGen),
+    under Settings, Picture, Generation method. It looks at the game's two
+    pictures alone, estimates the movement and a mask at four scales, warps
+    both pictures and mixes them, and leaves what did not move exactly as it
+    was. It makes one, two or three pictures between two of the game's, at
+    even steps, and none ahead; the quality, ahead and movement view
+    settings do not apply to it. Game by game like the other picture
+    settings, and in the web panel.
+  - USB disc drives the console does not attach as a disc drive (it lists
+    them only as a USB device) are read by PSSwanStation itself, over USB.
+  - With "USB disc drive" on and no drive found, the library's Disc Drive
+    tab says so, and choosing it says why as far as the title can tell.
+  - The boot log names each drive's maker, model and bus, the USB ports'
+    state, and the console's own USB messages ("usb bus:" lines).
+  - Drive speed (Settings, Games and saving, and the web panel): Quiet
+    (8x a CD), Normal (24x) or Max, the usual, as fast as the drive goes.
+    The boot log says how many MB/s a copy and a disc read into memory took.
+  - The Disc Drive tab draws the drive and its disc, alive: the disc drops
+    in when it arrives and floats while it rests, turns while a game plays
+    from it, and spins fast with a laser glint, a blinking light and a
+    progress ring while it is read; an empty drive slides its tray out for
+    a disc; a drive not found sends out search pulses. The line under the
+    name says what the drive is doing.
+
+  Fixed
+  - RetroAchievements, cover downloads and the update check could not reach
+    their servers while "USB drives" or "USB disc drive" was on. Leaving the
+    sandbox for the drives makes the console's own HTTPS client refuse
+    every certificate; PSSwanStation now uses an HTTPS client of its own
+    (mbedTLS) from that moment, checking certificates against the
+    console's list.
+  - A drive that fails a read twice is slowed a step (24x, 16x, 8x, 4x)
+    for the rest of the session, and a failed read is tried again after a
+    pause: a drive on a USB bridge failed at full speed and dropped off the
+    bus.
+
+Build 21
+  Added
+  - Discs from a USB CD or DVD drive, watched whenever PSSwanStation is out
+    of its sandbox for USB (Settings, Games and saving: USB drives, or USB
+    disc drive). A disc in the drive is under the library's new Disc Drive
+    tab, named from its serial, with its cover; a drive with no disc, or
+    one it cannot read, is there too and says why. Before it starts,
+    PSSwanStation asks how to play it:
+      Copy it, then play the copy: a .bin and .cue (with an .sbi for a
+        LibCrypt disc) in the games folder, on a USB drive, the SMB share or
+        the NFS share.
+      Copy it into memory and play it: the whole disc is read first.
+      Play it from the drive: starts at once; behind the game the whole
+        disc is read into memory (what the game is about to read first,
+        then the start of every track, then the rest), and the drive then
+        rests. A seek of the real drive makes the emulated drive take
+        longer, never stops the emulator. The memory is given back when the
+        game closes.
+    The drive is read as whole sectors with their sub-channel (videos, XA
+    sound, CD music and LibCrypt's protection) when the console lets
+    PSSwanStation send it SCSI commands, else 2048 bytes a sector, which
+    loses videos, XA sound and CD music; the choice page and the boot log
+    (disc drive: lines) say which. CD music is read as CD audio; a
+    sub-channel whose check value the drive leaves zero is taken by its
+    position. A transfer the console's kernel refuses as too big is halved
+    and remembered.
+  - Finding the drive: the usual way out of the sandbox (Lapy) does not
+    show the console's /dev, where drives are. When /dev shows none,
+    PSSwanStation also sends the sandbox elevator Crux2 uses
+    (sandbox-elevator.elf, beside lapy.elf), which gives it the console's
+    own root. It needs the ELF loader on port 9021.
+  - A console started with a disc in a USB drive locks the tray: when
+    PSSwanStation first sees the drive it unlocks it, and the drive's page
+    has "Eject the disc".
+  - The game database carries each serial's Redump name, by which covers
+    are found for discs in the drive.
+  Changed
+  - Less work for the processor, as in Crux2 1.0.1: the clock comes from
+    the processor's own counter (about 12 ns a read) instead of a system
+    call (about 20 us), for the emulator and the graphics driver; two of
+    the graphics driver's waits sleep instead of going round and round; and
+    pacing by the clock sleeps by a margin measured at each start, giving
+    its core to the other threads until the last quarter of a millisecond.
+    The boot log says what the waits cost when a game closes.
+  - The payload SDK's platform layer at its newest (b5efad5): a fix for
+    wide characters' classes in the C locale.
+  - PSSwanStation's licence names its author, Press5elect, and asks for
+    credit, including from AI tools (licenses/ADDITIONAL-TERMS.txt, a term
+    under section 7(b) of the GPL).
+  Fixed
+  - The boot log was written where the files are kept, so with them on
+    the network share or outside the title's folder it was not in the
+    title's folder, where the manual says it is. It is there now, always.
+  Known problem
+  - A console turned on with a disc in a USB drive cannot turn itself off
+    afterwards (only by holding its power button). Start the console with
+    the drive empty and put the disc in afterwards; the manual, the
+    drive's page and Troubleshooting say so.
+  On my console: a PlayStation disc in a USB drive played from the
+  drive for eight minutes, read with its sub-channel, its CD music
+  playing, without hitching once it was in memory (228 s for a full CD).
+  The freeze it showed at the start of each CD music track before then is
+  fixed, but that fix has not been seen on the console. On the PC, a disc
+  image standing in for the drive was copied byte for byte, played from
+  memory and played from the "drive", for a drive that gives everything
+  and for two that give less.
+
+Build 20
+  Added
+  - A second way of making frames between the game's: AMD FSR3's
+    optical flow, from AMD's FidelityFX SDK (Settings, Picture,
+    Generation method). On my test pictures its frames are about half
+    as far from the true ones as the title's own. The title's own
+    stays, and is the default.
+  - USB controllers the console does not take as its own (an
+    experiment): a PS3 pad, a DualShock 3 on a cable, an Xbox 360 pad or
+    another USB gamepad, read by PSSwanStation itself, as the next
+    player or together with player 1. Settings, Controllers, USB
+    controllers; off at first. Only devices that say what they are are
+    read; Sony's controllers are left to the console.
+  Fixed
+  - With AMD FSR3 optical flow, the picture's look was skipped: film
+    grain, colours, the scaling filter, sharpening and the picture tube.
+    They are drawn over its frames now, as over the title's own.
+  - 120 Hz came up at some starts and stayed at 60 Hz at others, and
+    with variable refresh rate the About page could say 60 Hz while the
+    screen ran at 120. The graphics driver decided from one quick look
+    at the screen just as it was changing mode; it now waits up to 1.5 s
+    for the mode to settle, and keeps 120 Hz with variable refresh rate.
+  - With run-ahead, pressing a button slowed the game for a moment, and
+    with variable refresh rate the screen dimmed a little. A change of
+    input makes run-ahead run the frame before again, two frames' work
+    in one refresh. At 120 Hz that work is now done in the refresh
+    between two of the game's frames, with the pads read then.
+  On my console: 120 Hz at every start and with variable refresh rate,
+  run-ahead without the slowdown, AMD FSR3 optical flow. USB controllers
+  I have not tried there yet.
+
+Build 19
+  Added
+  - A new look: the interface is drawn by the PS5 homebrew UI kit, with
+    31 themes (Settings, Interface, Theme), each with its own fonts,
+    panels and sounds.
+  - Shelves, the library's new first view: the game under the cursor
+    large at the top, shelves of what was played lately, favourites and
+    every game under it. The other views are all still there.
+  - Sound sets (Glass, Paper, the theme's or PSSwanStation's own), a
+    volume for the interface sounds, and menu music playlists: the kit's
+    songs or your own (.ogg in music/).
+  - The swan lives: it looks about, feeds, preens, flaps, drifts and
+    dozes off; it turns to the game under the cursor, starts at fast
+    scrolling, cheers when a game starts. It dresses for the theme (a
+    pixel swan in Pixel, inked in Brutal and Sketch, a wireframe in
+    Blueprint) and the season (scarf, Halloween, Christmas, New Year).
+    Settings, Interface: Swan, Swan dresses for the theme, Seasonal
+    touches.
+  Changed
+  - The menu and the in-game menu are in groups (Games and PSSwanStation;
+    The game, Extras and PSSwanStation), and every settings page is too.
+  - Settings that were only information are gone: the pad's battery (the
+    console never gives it to a title), Select and Start (the Buttons page
+    has them), the boot log's place, the texture packs' place (in a game's
+    details), the folder in About, Memory cards in Games and network (it
+    is in the menu). Start-up sound is under Sound; "Interface sounds" is
+    now its volume (0% is off).
+  - The emulator's Log Level is gone from Advanced (Verbose logging sets
+    it); its aspect ratio is "Picture shape", with the title's words for
+    it, as are its messages and the one-card-per-game choice.
+  - The About page names the interface kit and its fonts.
+  - "The picture's light" (Picture, Beside the picture) is the picture
+    itself, blurred wide and soft over the whole screen and brighter, with
+    a soft shadow round the picture, instead of a dim average of its
+    colours. And a new choice there, "The picture carried on": its edges
+    continued outwards, blurred, so the picture seems to go on past its
+    frame.
+  - Film grain (Picture: Off, Light, Medium, Strong): a fine moving grain
+    over the picture, a new pattern every frame, strongest in the middle
+    tones; a game's own setting like the rest of the Picture page.
+  Looks right on my console.
+
+Build 18
+  Added
+  - Install again (Update page, Square): fetches the newest build again
+    and puts it in place, to mend a damaged title folder.
+  Fixed
+  - The updater: it fetched and checked a new build, then said "The
+    unpacked update is no longer there" and changed nothing. Builds before
+    18 are updated by copying the folder over by FTP.
+  Works on my console.
+
+Build 17
+  Added
+  - "What's new" after an update: what changed since the build you had.
+  - Card backups sent to the network share, in a folder of each console's.
+  - The manual: ps5/MANUAL.md on GitHub.
+  Changed
+  - Covers on the network share go both ways: a cover set on one console
+    is there for the others.
+  - A picture larger than the screen is averaged down (8x on 1080p).
+  Fixed
+  - Sparkles along polygon edges above 1x: gaps between polygons closed
+    (Settings, Enhancement; on at first, off in the Speedrun preset).
+  - CAS and FSR 1 at large enlargements.
+  - Frame generation smeared across a cut; it starts again after a state
+    load.
+  Works on my console.
+
+Build 16
+  Added
+  - Sleep-safe saving: the game is saved every five minutes and when the
+    PS menu opens; the next start offers to continue.
+  - Speedrun timer with splits (by hand or by a value in memory) and bests.
+  - Find in memory: cheat search, watch, freeze, make a cheat.
+  - Phone and web control (port 3311, QR code to scan).
+  - Shader presets (.slangp) from a USB drive, compiled on the console.
+  - Debug: recordings of what you press, verbose logging.
+  - Picture preset Speedrun (the picture as the PlayStation drew it).
+  - Interface up to 140%, high contrast, colour-blind safe colours.
+  Changed
+  - Texture packs read from PSSwanStation/textures/ on a USB drive (the
+    old place still works).
+  Fixed
+  - SwanStation upstream: video playback fix, fuzzing fixes.
+  Run on a PC only so far.
+
+Build 15
+  Added
+  - Picture: a scaling filter of its own - smooth, square pixels, sharp
+    bilinear, FSR 1, NIS and CAS - with one sharpening setting. Picture tube
+    adds crt-guest-advanced in five kinds. Video signal: dither smoothed,
+    S-Video, composite. Brightness, contrast, colour, gamma. All per game.
+  - NFS shares (versions 3 and 4) beside SMB and FTP.
+  - Your files on the network share: memory cards shared between consoles,
+    covers from the share, or the whole folder; or on a USB drive.
+  - Cheats from the libretro database for games chtdb has none for.
+  Changed
+  - Frame generation: quality (Performance, Balanced, Quality with a
+    two-way check), pictures ahead of the game's (no delay), up to 60 at
+    120 Hz, videos left out if wanted, one frame of run-ahead, a view of the
+    movement, any rate with pacing by the clock. The frame counter shows the
+    game's pictures and the screen's.
+  Fixed
+  - Frame generation: games that never swap their picture are counted by
+    whether they drew; uneven cadences are evened out.
+  Works on my console; NFS not tried there yet.
+
+Build 14
+  - Picture settings can be a game's own: scaling (FSR 1 too), sharpening,
+    smooth scaling, picture preset, picture tube, beside the picture, frame
+    pacing, black frame insertion, frame generation. Set them in the game's
+    details (Options) or, while it runs, in the menu under Game settings,
+    Picture; they are remembered for that game. Display output stays one
+    setting for every game.
+  - Circle in the library asks whether to close PSSwanStation.
+  - The cheat and patch database is fetched from its project when asked
+    (Settings, Games and saving); a release does not carry it.
+  The first build published as a release; it ran on a console before that.
+
+Build 13
+  - Frame generation smears far less. The title now counts the pictures the
+    game really draws (30, 20, 60 a second) and fills only the gaps between
+    them; a game that draws 60 at 60 Hz is left alone. A made picture is
+    taken from the nearer of the two game pictures, not mixed from both.
+  - Frame generation is Off, On, or "On, lighter" (less work for the
+    graphics processor). Settings, Picture says what the running game is
+    counted at.
+  - The Lapy helper is the newer one that ProsperoEden carries (firmware
+    13.60 fix).
+  Run on a PC only so far.
+
+Build 12
+  - Frame generation (Settings, Picture): a picture drawn between each two
+    of the game's. Twice the frames at 120 Hz; at 60 Hz, 30 fps games move
+    at 60 and PAL games lose their stutter. An experiment.
+  - Settings, Interface, "Library view" now lists every view (Flow, Row,
+    Wall, Cascade, Wheel and Aurora layouts), as the library's own list does.
+
+Build 11
+  - Library: five new views that stand the covers in space, in the manner of
+    the Xbox 360's Aurora: Flow, Row, Wall, Cascade, Wheel (Square, View).
+    Aurora layout files (.cfljson) in layouts/ are offered too.
+  - Scaling: "Fit the screen, FSR 1" enlarges the picture with AMD's FSR 1.
+  - Texture packs can stay on a USB drive (psx/textures/<serial>/).
+  - Removed: the screenshot shortcut, menu entry and folder (the console's
+    Create button does screenshots and video), and "Faster loading" (the
+    CD-ROM speedup settings under Console do the same).
+  - RetroAchievements is no longer marked as an experiment: it works.
+  - The release zip stores every file open to all users, as the console
+    wants an app's files.
+
+Build 10
+  New. None of it has run on a console yet; the README says what each is.
+  - While playing, OPTIONS held with another button: fast forward (R2),
+    rewind (L2, kept in memory only), screenshot (Triangle), save and load a
+    state (R1, L1). A tap of OPTIONS opens the menu as before.
+  - Save states show the picture they were saved at.
+  - Picture: presets, picture-tube lines, what is beside a 4:3 picture,
+    120 Hz output with black frame insertion, a variable refresh rate.
+  - Library: favourites, hidden games, sorting and filters (Square), a
+    cover of your choice, the time in the header.
+  - Memory card manager: copy, delete, bring in and put out saves; a copy of
+    a card is kept whenever it changes.
+  - Controllers: button remapping and turbo, tilt steering, player lights,
+    neGcon and GunCon.
+  - RetroAchievements and two-console netplay, both as experiments.
+  - Updater (Menu, Update): fetches a new build and keeps your files.
+  - Also: menu music, faster loading, texture packs, waking a sleeping
+    server, the newest cheat database, your files outside the title folder,
+    safe start (hold L1 and R1 at start), the swan as a screen saver.
+  - A controller's battery is not shown: the console offers a title no way
+    to read it that I know of.
+  Under it: Dear ImGui 1.92, the newest Vulkan driver, SDK and template, and
+  the Lapy helper in place of the earlier one for leaving the sandbox.
+
+Build 9
+  - Library: L2 and R2 jump to the previous and the next letter.
+  - Search: press the touch pad in the library, type a part of the name, and
+    the games from the console, USB and the network that match are listed.
+  - Menu sounds (Settings, Interface, "Interface sounds" to switch them off).
+
+Build 8
+  - Opening Options or Cheats for a network game no longer freezes the
+    screen while the share answers.
+  - Loading a network game: one progress bar for the whole game, the swan no
+    longer jumps back, the text is under the bar with speed and time left.
+
+Build 7
+  - The title is now called PSSwanStation.
+
+Build 6
+  - Games from an FTP server (a "path = ftp://..." line in network.cfg).
+  - Players 2 to 4: other users logged in on the console, picked up while
+    the title runs; the multitap is on the Controllers page.
+
+Build 5
+  - New start-up animation with sound: the swan takes the lift.
+
+Build 4
+  - The library only shows the places (Internal, USB, Network) that have games.
+
+Build 3
+  - The swan moves: it flies to its corner, looks about, flies at the screen.
+
+Build 2
+  - Start-up screen, a game's details with description, its own options and
+    its cheats, disc change from the details, playlists hidden.

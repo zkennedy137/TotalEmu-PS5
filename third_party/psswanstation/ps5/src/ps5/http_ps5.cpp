@@ -1,0 +1,312 @@
+/*
+	PSSwanStation - HTTP(S) through the console's own client.
+
+	SPDX-FileCopyrightText: 2026 Press5elect
+	SPDX-License-Identifier: GPL-3.0-or-later
+
+	libSceHttp2 on the calling thread, with the calls, pool sizes and time-outs
+	of PSFlyCast's cover downloader (shell/ps5/ps5_covers.cpp, after PS5SX2's
+	cover fetcher), which runs in a title's sandbox. One request at a time: a
+	long download (the updater's) holds the others back until it is done or
+	stopped.
+
+	Once the title has left its sandbox through the sandbox elevator, the
+	console's client refuses every public certificate (0x8095f00c), so the
+	requests go through the title's own TLS instead (tls_client.cpp): from the
+	moment the elevator answers yes (httpUseOwnTls), or from the first request
+	refused that way.
+*/
+#include "fe.h"
+#include "tls_client.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <mutex>
+#include <sys/stat.h>
+#include <unistd.h>
+
+extern "C"
+{
+int sceNetInit(void);
+int sceNetPoolCreate(const char *name, int size, int flags);
+int sceSslInit(size_t poolSize);
+int sceHttp2Init(int netPool, int sslContext, size_t poolSize, int maxRequests);
+int sceHttp2CreateTemplate(int context, const char *userAgent, int httpVersion, int autoProxy);
+int sceHttp2CreateRequestWithURL(int templateId, const char *method, const char *url, uint64_t contentLength);
+int sceHttp2DeleteRequest(int request);
+int sceHttp2SendRequest(int request, const void *data, size_t size);
+int sceHttp2GetStatusCode(int request, int *status);
+int sceHttp2ReadData(int request, void *data, size_t size);
+int sceHttp2SetResolveTimeOut(int id, uint32_t usec);
+int sceHttp2SetConnectTimeOut(int id, uint32_t usec);
+int sceHttp2SetSendTimeOut(int id, uint32_t usec);
+int sceHttp2SetRecvTimeOut(int id, uint32_t usec);
+int sceHttp2SetTimeOut(int id, uint32_t usec);
+int sceHttp2SetAutoRedirect(int id, int enable);
+int sceNetCtlInit(void);
+int sceNetCtlGetState(int *state);
+}
+
+namespace fe::platform
+{
+namespace
+{
+std::mutex mutex;
+bool tried, ok;
+int templateId = -1;
+int reported;
+// The title's own TLS instead of the console's client (see above).
+bool ownTls;
+// The console's client's answer to a certificate it will not take.
+constexpr int CertificateRefused = (int)0x8095f00c;
+
+void tlsLog(const char *line)
+{
+	diag::mark("%s", line);
+}
+
+void switchToOwnTls(const char *why)
+{
+	if (ownTls)
+		return;
+	ownTls = true;
+	fe::tls::setLog(tlsLog);
+	fe::tls::setUserAgent(userAgent());
+	fe::tls::addCertificateFile(appDir + "assets/cacert.pem");
+	diag::mark("http: the title's own TLS from now on (%s)", why);
+}
+
+bool init()
+{
+	if (tried)
+		return ok;
+	tried = true;
+	// Is there a network at all? An offline console must not wait on the
+	// resolver. State 3 is "address obtained".
+	const int nc = sceNetCtlInit();
+	int state[4] = { -1, 0, 0, 0 };
+	const int gs = sceNetCtlGetState(state);
+	if (gs == 0 && state[0] >= 0 && state[0] < 3)
+	{
+		diag::mark("http: the console is not connected (netctl %#x, state %d)", (unsigned)nc, state[0]);
+		return false;
+	}
+	const int net = sceNetInit();	// an error only means it was up already
+	const int pool = sceNetPoolCreate("psswanstation-http", 64 * 1024, 0);
+	const int ssl = pool >= 0 ? sceSslInit(256 * 1024) : -1;
+	const int context = ssl >= 0 ? sceHttp2Init(pool, ssl, 256 * 1024, 1) : -1;
+	templateId = context >= 0 ? sceHttp2CreateTemplate(context, userAgent().c_str(), 3, 1) : -1;
+	diag::mark("http: net %#x pool %#x ssl %#x http2 %#x template %#x", (unsigned)net, (unsigned)pool, (unsigned)ssl,
+			(unsigned)context, (unsigned)templateId);
+	ok = templateId >= 0;
+	return ok;
+}
+}
+
+bool httpAvailable()
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	return init();
+}
+
+namespace
+{
+// What of a URL goes into the log: never what follows a '?', where a request
+// can carry a name or a key.
+std::string shown(const std::string& url)
+{
+	return url.substr(0, std::min(url.find('?'), (size_t)60));
+}
+
+// Makes the request and waits for its status. The request's id, with
+// `status` set, or a negative number.
+int begin(const std::string& url, unsigned seconds, int& status, int *error)
+{
+	status = -1;
+	if (error != nullptr)
+		*error = 0;
+	if (!init())
+		return -1;
+	const int request = sceHttp2CreateRequestWithURL(templateId, "GET", url.c_str(), 0);
+	if (request < 0)
+	{
+		if (error != nullptr)
+			*error = request;
+		return -1;
+	}
+	const unsigned phase = std::min(seconds, 10u) * 1000 * 1000;
+	sceHttp2SetResolveTimeOut(request, phase);
+	sceHttp2SetConnectTimeOut(request, phase);
+	sceHttp2SetSendTimeOut(request, phase);
+	sceHttp2SetRecvTimeOut(request, phase);
+	sceHttp2SetTimeOut(request, seconds * 1000 * 1000);
+	sceHttp2SetAutoRedirect(request, 1);
+	const int sent = sceHttp2SendRequest(request, nullptr, 0);
+	const int got = sent == 0 ? sceHttp2GetStatusCode(request, &status) : -1;
+	if (sent != 0 || got != 0)
+	{
+		if (error != nullptr)
+			*error = sent != 0 ? sent : got;
+		if (reported++ < 6)
+			diag::mark("http: request failed: send %#x, status %#x (%s)", (unsigned)sent, (unsigned)got,
+					shown(url).c_str());
+		sceHttp2DeleteRequest(request);
+		status = -1;
+		return -1;
+	}
+	return request;
+}
+}
+
+namespace
+{
+int ownGet(const std::string& url, std::vector<uint8_t>& out, unsigned seconds, int *error)
+{
+	if (error != nullptr)
+		*error = 0;
+	if (!init())
+		return -1;
+	std::string why;
+	const int status = fe::tls::get(url, out, seconds, 8u << 20, &why);
+	if (status < 0 && reported++ < 12)
+		diag::mark("http: request failed: %s (%s)", why.c_str(), shown(url).c_str());
+	return status;
+}
+}
+
+void httpUseOwnTls(const char *why)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	switchToOwnTls(why);
+}
+
+int httpGet(const std::string& url, std::vector<uint8_t>& out, unsigned seconds, int *error)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	out.clear();
+	if (ownTls)
+		return ownGet(url, out, seconds, error);
+	int status = -1;
+	int failure = 0;
+	const int request = begin(url, seconds, status, &failure);
+	if (error != nullptr)
+		*error = failure;
+	if (request < 0 && failure == CertificateRefused)
+	{
+		switchToOwnTls("the console's client refused a certificate");
+		return ownGet(url, out, seconds, error);
+	}
+	if (request < 0)
+		return -1;
+	// An error's body is read too: it is the server's reason. Only so much of it.
+	const size_t limit = status >= 200 && status < 300 ? (size_t)(8u << 20) : (size_t)(64u << 10);
+	std::vector<uint8_t> chunk(64 * 1024);
+	for (;;)
+	{
+		const int n = sceHttp2ReadData(request, chunk.data(), chunk.size());
+		if (n < 0)
+		{
+			if (reported++ < 6)
+				diag::mark("http: reading the answer failed: %#x", (unsigned)n);
+			if (status >= 200 && status < 300)
+				status = -1;
+			break;
+		}
+		if (n == 0)
+			break;
+		out.insert(out.end(), chunk.begin(), chunk.begin() + n);
+		if (out.size() > limit)
+		{
+			if (status >= 200 && status < 300)
+				status = -1;
+			break;
+		}
+	}
+	sceHttp2DeleteRequest(request);
+	return status;
+}
+
+int httpDownload(const std::string& url, const std::string& path, uint64_t limit,
+		const std::function<bool(uint64_t done, uint64_t total)>& progress)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	int status = -1;
+	int failure = 0;
+	// The whole of it may take minutes: the time limit is on each read.
+	const int request = ownTls ? -1 : begin(url, 3600, status, &failure);
+	if (request < 0 && failure == CertificateRefused)
+		switchToOwnTls("the console's client refused a certificate");
+	if (request < 0 && ownTls)
+	{
+		if (!init())
+			return -1;
+		std::string why;
+		const int got = fe::tls::download(url, path, limit, progress, 60, &why);
+		if (got != 200)
+			diag::mark("http: the download failed: %d%s%s (%s)", got, why.empty() ? "" : ", ", why.c_str(),
+					shown(url).c_str());
+		return got;
+	}
+	if (request < 0)
+		return -1;
+	if (status != 200)
+	{
+		sceHttp2DeleteRequest(request);
+		return status;
+	}
+	// How much is coming is not asked of the client (its call for that has not
+	// been used on a console by anything this title follows): the caller knows
+	// the size from elsewhere, or shows what has arrived.
+	const uint64_t total = 0;
+	FILE *file = fopen(path.c_str(), "wb");
+	if (file == nullptr)
+	{
+		sceHttp2DeleteRequest(request);
+		return -1;
+	}
+	// Written in pieces of a megabyte: a small write costs the console's
+	// storage as much as a large one.
+	std::vector<uint8_t> chunk(1 << 20);
+	uint64_t done = 0;
+	size_t held = 0;
+	bool ok = true;
+	for (;;)
+	{
+		const int n = sceHttp2ReadData(request, chunk.data() + held, chunk.size() - held);
+		if (n < 0)
+		{
+			diag::mark("http: the download broke off: %#x after %llu bytes", (unsigned)n, (unsigned long long)done);
+			ok = false;
+			break;
+		}
+		held += (size_t)n;
+		done += (uint64_t)n;
+		if (held == chunk.size() || n == 0)
+		{
+			if (held != 0 && fwrite(chunk.data(), 1, held, file) != held)
+			{
+				ok = false;
+				break;
+			}
+			held = 0;
+		}
+		if (n == 0)
+			break;
+		if (done > limit || (progress && !progress(done, total)))
+		{
+			ok = false;
+			break;
+		}
+	}
+	ok = fclose(file) == 0 && ok && (total == 0 || done == total);
+	sceHttp2DeleteRequest(request);
+	if (!ok)
+	{
+		unlink(path.c_str());
+		return -1;
+	}
+	chmod(path.c_str(), 0666);
+	return 200;
+}
+
+}
